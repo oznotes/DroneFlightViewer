@@ -904,7 +904,7 @@ function renderEvents(data) {
     }
     el.style.borderLeftColor = leftColor;
     el.innerHTML =
-      `<div><span class="ts">+${(+ev.t).toFixed(2)}s</span>` +
+      `<div><span class="ts">${tsLabel(ev.t, data.started_at)}</span>` +
       `<span class="type">${escapeHtml(ev.type || '')}</span></div>` +
       `<div class="msg">${escapeHtml(ev.message || '')}</div>`;
     el.addEventListener('click', () => focusEvent(ev, el));
@@ -914,9 +914,8 @@ function renderEvents(data) {
   for (const a of anoms) {
     const el = document.createElement('div');
     el.className = 'anom-item';
-    const tStr = a.t != null ? `+${(+a.t).toFixed(2)}s` : '—';
     el.innerHTML =
-      `<div><span class="ts">${tStr}</span>` +
+      `<div><span class="ts">${tsLabel(a.t, data.started_at)}</span>` +
       `<span class="type">${escapeHtml(a.kind || '')}</span></div>` +
       `<div class="msg">${escapeHtml(a.detail || '')}</div>`;
     el.addEventListener('click', () => focusAnomaly(a, el));
@@ -1037,6 +1036,17 @@ function formatAbsTime(t, started_at) {
   const base = Date.parse(started_at);
   if (!Number.isFinite(base)) return formatRelTime(t);
   return new Date(base + t * 1000).toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+}
+
+// Combined wall-clock + relative timestamp for events/anomalies. When
+// started_at is unknown, formatAbsTime returns the relative form, so we
+// fall back to a single relative label instead of rendering it twice.
+function tsLabel(t, started_at) {
+  if (t == null) return '—';
+  const rel = `+${(+t).toFixed(2)}s`;
+  const abs = formatAbsTime(t, started_at);
+  if (abs === rel) return rel;
+  return `<span title="${abs} UTC">${abs.slice(11, 19)}Z</span> ${rel}`;
 }
 
 function escapeHtml(s) {

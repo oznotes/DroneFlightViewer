@@ -62,19 +62,30 @@ Top-level shape of `parse.py` output:
 
 ```
 filename       str
-format         str       # "dataflash" | "tlog"
-firmware       str       # boot banner
-started_at     str       # ISO 8601 UTC
-duration_s     float
-home           {lat, lon, alt, source}
-stats          {...}     # max_alt, max_speed, distance_m, etc.
-track          [{t, lat, lon, alt, ...}]
-modes          [{t, mode}]
-events         [{t, severity, source, text}]
-waypoints      [{seq, lat, lon, alt, cmd}]
-battery        [{t, v, i, remaining}]
-anomalies      [{t, kind, detail}]
+format         str        # "dataflash" | "mavlink" | "text" | "unknown"
+firmware       str | null # joined boot-banner MSG lines
+started_at     str | null # ISO 8601 UTC at the first GPS-locked sample
+duration_s     float      # last - first track-point time, 0.0 if no track
+home           { lat, lon, alt, source } | null
+                          #   source: "HOME" | "ORGN" | "first_gps"
+stats          {
+                  gps_points, max_alt, max_speed, total_distance_m,
+                  duration_s, events, anomalies, armed, bad_data_frames
+                }
+track          [{ t, lat, lon, alt, spd }]        # spd may be null
+modes          [{ t, num, name }]                 # name null for unknown nums
+events         [{ t, type, severity, message }]   # severity only on STATUSTEXT
+                                                  # type: STATUSTEXT | MSG | ERR | EV
+waypoints      [{ seq, cmd, cmd_name, lat, lon, alt, outlier }]
+                                                  # outlier: > 50 km from track centroid
+battery        [{ t, voltage, current }]          # volts, amps
+anomalies      [{ t, kind, detail, lat, lon }]
+                                                  # kind: gps_gap | gps_jump | alt_jump
+                                                  #     | battery_anomaly | waypoint_outlier
+                                                  # t and lat/lon may be null
 ```
+
+All `t` values are seconds since the first GPS-locked sample — the same x-axis the chart uses.
 
 ## Stack
 

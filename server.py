@@ -19,7 +19,7 @@ from flask import Flask, Response, abort, jsonify, send_from_directory
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 STATIC_DIR = BASE_DIR / "static"
-VALID_EXTS = {".bin", ".tlog", ".log", ".ulg"}
+VALID_EXTS = {".bin", ".tlog", ".log"}
 
 
 app = Flask(__name__, static_folder=None)
