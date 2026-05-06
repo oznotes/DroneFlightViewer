@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drone Log Viewer</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet-hotline@0.4.0/dist/leaflet.hotline.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+<style>
+  :root {
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --bg: #0a0a0a;
+    --panel: #111;
+    --border: #333;
+    --text: #ddd;
+    --muted: #888;
+    --accent: #4af;
+    --warn: #ff8c00;
+    --danger: #ff4444;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.45 var(--font-ui);
+  }
+
+  /* ── Header ── */
+  header {
+    height: 50px;
+    flex: 0 0 50px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 {
+    margin: 0;
+    font: normal 14px var(--font-ui);
+    color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+  }
+  header select {
+    background: #1a1a1a;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font: 12px var(--font-mono);
+    padding: 4px 8px;
+    border-radius: 2px;
+    min-width: 180px;
+  }
+  header select:focus { outline: 1px solid var(--accent); }
+
+  .stats-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-left: auto;
+    text-align: right;
+    overflow: hidden;
+    max-width: 60%;
+  }
+  .stats-line {
+    font: 11px/1.2 var(--font-mono);
+    color: #00ff41;
+    text-shadow: 0 0 4px rgba(0, 255, 65, 0.45);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .firmware-line {
+    font: 10px/1.2 var(--font-mono);
+    color: #2a8c2a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+
+  .btn {
+    background: #1a1a1a;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font: 11px var(--font-mono);
+    padding: 5px 10px;
+    border-radius: 2px;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.active { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Layout ── */
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  /* Responsive grid: map + chart stack in a left column; events panel is a
+     full-height right column. When the panel is hidden, the right column
+     collapses and the left column reflows to fill the width. fr-based
+     row sizing keeps the 65/35 split fluid on window resize. */
+  #main {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    grid-template-rows: 65fr 35fr;
+    overflow: hidden;
+    min-height: 0;
+  }
+  #main.no-events { grid-template-columns: 1fr; }
+  #map-wrap {
+    grid-column: 1;
+    grid-row: 1;
+    position: relative;
+    border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+  }
+  #main.no-events #map-wrap { border-right: none; }
+  #map { width: 100%; height: 100%; background: #000; }
+  #chart-wrap {
+    grid-column: 1;
+    grid-row: 2;
+    background: var(--panel);
+    position: relative;
+    padding: 8px 12px;
+    overflow: hidden;
+    min-height: 0;
+  }
+  #chart { width: 100%; height: 100%; }
+  #events-panel {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #events-panel.collapsed { display: none; }
+
+  /* ── Stats pill (map overlay) ── */
+  #stats-pill {
+    position: absolute;
+    top: 8px;
+    right: 54px;
+    z-index: 500;
+    padding: 4px 10px;
+    background: rgba(17, 17, 17, 0.9);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font: 11px/1 var(--font-mono);
+    color: var(--text);
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #stats-pill .warn { color: var(--warn); }
+  #stats-pill .ground { color: var(--muted); }
+  #stats-pill .armed { color: var(--accent); }
+
+  /* ── Events panel ── */
+  .panel-header {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px 8px;
+    z-index: 2;
+  }
+  .section-label {
+    font: 10px/1 var(--font-ui);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    display: inline-block;
+  }
+  .badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    background: #1a1a1a;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    font: 10px var(--font-mono);
+    vertical-align: 1px;
+  }
+  .badge.warn {
+    color: var(--warn);
+    border-color: var(--warn);
+  }
+  #event-filter {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    padding: 5px 8px;
+    background: #1a1a1a;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font: 11px var(--font-mono);
+    border-radius: 2px;
+  }
+  #event-filter:focus { outline: 1px solid var(--accent); }
+  #event-filter::placeholder { color: #555; }
+
+  .anom-header {
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    background: #0d0d0d;
+  }
+
+  #events-list, #anom-list {
+    overflow-y: auto;
+  }
+  #events-scroll {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .event-item, .anom-item {
+    padding: 8px 10px;
+    border-bottom: 1px solid #1a1a1a;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: background 0.3s;
+  }
+  .event-item:hover, .anom-item:hover {
+    background: #181818;
+  }
+  .event-item.flash, .anom-item.flash {
+    background: rgba(74, 170, 255, 0.15);
+  }
+  .event-item .ts {
+    font: 11px var(--font-mono);
+    color: var(--muted);
+  }
+  .event-item .type, .anom-item .type {
+    font: 10px var(--font-mono);
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-left: 6px;
+    letter-spacing: 0.04em;
+  }
+  .event-item .msg, .anom-item .msg {
+    margin-top: 3px;
+    font: 11px/1.4 var(--font-mono);
+    color: var(--text);
+    word-break: break-word;
+  }
+  .anom-item { border-left-color: var(--warn); }
+  .event-item.hide { display: none; }
+
+  /* ── Map markers ── */
+  .wp {
+    width: 24px;
+    height: 24px;
+    line-height: 20px;
+    text-align: center;
+    background: var(--accent);
+    color: #000;
+    font: bold 11px var(--font-mono);
+    border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    box-sizing: border-box;
+  }
+  .wp.outlier {
+    background: var(--warn);
+    transform: rotate(45deg);
+    border-radius: 0;
+  }
+  .wp.outlier > * { transform: rotate(-45deg); display: inline-block; }
+  .home-icon {
+    font-size: 18px;
+    line-height: 24px;
+    text-align: center;
+    text-shadow: 0 0 3px #000, 0 0 3px #000;
+  }
+  .anom {
+    width: 12px;
+    height: 12px;
+    background: var(--warn);
+    transform: rotate(45deg);
+    border: 1px solid #fff;
+  }
+
+  /* ── Leaflet dark popups ── */
+  .leaflet-popup-content-wrapper {
+    background: #111;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font: 11px/1.4 var(--font-mono);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  }
+  .leaflet-popup-content { margin: 8px 10px; }
+  .leaflet-popup-tip { background: #111; border: 1px solid var(--border); }
+  .leaflet-popup-close-button { color: var(--muted) !important; }
+  .geocode-row {
+    margin-top: 6px; padding-top: 6px;
+    border-top: 1px solid var(--border);
+  }
+  .geocode-btn {
+    color: var(--accent); cursor: pointer; text-decoration: underline;
+    font: 11px var(--font-mono); user-select: none;
+  }
+  .geocode-result {
+    margin-top: 4px; font: 11px var(--font-mono); color: var(--text);
+    word-wrap: break-word; max-width: 280px;
+  }
+  .leaflet-container { background: #000; font-family: var(--font-mono); }
+  .leaflet-control-attribution {
+    background: rgba(17, 17, 17, 0.85) !important;
+    color: var(--muted) !important;
+    font-size: 10px !important;
+  }
+  .leaflet-control-attribution a { color: var(--accent) !important; }
+  .leaflet-bar a {
+    background: #111 !important;
+    color: var(--text) !important;
+    border-color: var(--border) !important;
+  }
+  .leaflet-bar a:hover { background: #1a1a1a !important; }
+  .leaflet-control-layers {
+    background: rgba(17, 17, 17, 0.95) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text);
+  }
+  .leaflet-control-layers-toggle { background-color: #111 !important; }
+  .leaflet-control-layers label { color: var(--text); font: 11px var(--font-mono); }
+  .leaflet-control-scale-line {
+    background: rgba(17, 17, 17, 0.85) !important;
+    color: var(--text) !important;
+    border-color: var(--border) !important;
+    font: 10px var(--font-mono) !important;
+  }
+
+  /* ── Loading overlay ── */
+  #loading {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 10, 10, 0.7);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    font: 12px var(--font-mono);
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  #loading.show { display: flex; }
+  #loading .box {
+    padding: 16px 24px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+
+  /* ── Scrollbars ── */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0a0a0a; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>DRONE LOG VIEWER</h1>
+    <select id="logSelect" title="Loaded log file"></select>
+    <button id="reloadBtn" class="btn" title="Reload current log">Reload</button>
+    <div class="stats-block">
+      <div class="stats-line" id="hdrStats">no log loaded</div>
+      <div class="firmware-line" id="hdrFw"></div>
+    </div>
+    <button id="toggleEvents" class="btn active" title="Toggle events panel">Events</button>
+  </header>
+
+  <div id="main">
+    <div id="map-wrap">
+      <div id="map"></div>
+      <div id="stats-pill"></div>
+    </div>
+    <div id="chart-wrap"><canvas id="chart"></canvas></div>
+    <aside id="events-panel">
+      <div class="panel-header">
+        <span class="section-label">EVENTS</span><span class="badge" id="evCount">0</span>
+        <input type="search" id="event-filter" placeholder="filter…" autocomplete="off">
+      </div>
+      <div id="events-scroll">
+        <div id="events-list"></div>
+        <div class="anom-header">
+          <span class="section-label">ANOMALIES</span><span class="badge" id="anomCount">0</span>
+        </div>
+        <div id="anom-list"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<div id="loading"><div class="box">loading…</div></div>
+
+<script>
+'use strict';
+
+// Canvas/Chart.js read ctx.font as a literal string and don't expand CSS
+// custom properties — passing 'var(--font-mono)' silently falls back to the
+// browser default. Mirror the CSS stack here so chart text matches the UI.
+const MONO_FONT = 'ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace';
+
+// ── State ────────────────────────────────────────────────────────────────
+let map, baseLayers, overlayLayers, layerControl;
+let trackLayer = null, markersLayer = null, eventsLayer = null, anomLayer = null;
+let homeMarker = null;
+let cursor = null;            // hover dot driven by chart hover
+let chart = null;
+let currentData = null;       // last loaded log payload
+
+// ── Leaflet plugin: vertical mode-change lines on chart ─────────────────
+const modeLinesPlugin = {
+  id: 'modeLines',
+  afterDraw(c) {
+    const modes = c.config.options.plugins.modeLines && c.config.options.plugins.modeLines.modes;
+    if (!modes || !modes.length) return;
+    const { ctx, chartArea: { top, bottom }, scales: { x } } = c;
+    ctx.save();
+    ctx.strokeStyle = '#444';
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#888';
+    ctx.font = '10px ' + MONO_FONT;
+    for (const m of modes) {
+      const px = x.getPixelForValue(m.t);
+      if (px < x.left || px > x.right) continue;
+      ctx.beginPath();
+      ctx.moveTo(px, top);
+      ctx.lineTo(px, bottom);
+      ctx.stroke();
+      ctx.fillText(m.name || ('mode ' + m.num), px + 3, top + 10);
+    }
+    ctx.restore();
+  }
+};
+
+// ── Map ──────────────────────────────────────────────────────────────────
+function initMap() {
+  // maxNativeZoom = provider's true tile ceiling. Beyond it, Leaflet rescales
+  // existing tiles instead of fetching nonexistent ones (which 404 with HTML
+  // and trip Firefox's OpaqueResponseBlocking on png-extension URLs).
+  const sat = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { attribution: 'Tiles &copy; Esri', maxNativeZoom: 19, maxZoom: 22 }
+  );
+  const street = L.tileLayer(
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { attribution: '&copy; OpenStreetMap contributors', maxNativeZoom: 19, maxZoom: 22 }
+  );
+  const topo = L.tileLayer(
+    'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    { subdomains: 'abc', attribution: '&copy; OpenTopoMap (CC-BY-SA)', maxNativeZoom: 17, maxZoom: 22 }
+  );
+  const labels = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    { attribution: 'Labels &copy; Esri', maxNativeZoom: 13, maxZoom: 22 }
+  );
+
+  map = L.map('map', {
+    layers: [sat],
+    zoomControl: true,
+    worldCopyJump: true,
+    center: [0, 0],
+    zoom: 2,
+    preferCanvas: true
+  });
+
+  baseLayers = { 'Satellite': sat, 'Street': street, 'Topographic': topo };
+  overlayLayers = { 'Labels': labels };
+  layerControl = L.control.layers(baseLayers, overlayLayers, { position: 'topright', collapsed: true }).addTo(map);
+
+  L.control.scale({ imperial: false }).addTo(map);
+
+  cursor = L.circleMarker([0, 0], {
+    radius: 7, color: '#fff', weight: 2,
+    fillColor: '#4af', fillOpacity: 0.9, pane: 'markerPane'
+  });
+
+  // Wire any popup opened on the map for on-demand reverse-geocoding.
+  map.on('popupopen', e => wireGeocodePopup(e.popup));
+}
+
+// ── Reverse geocoding (Nominatim, no API key) ────────────────────────────
+// Honors OSM usage policy via a small in-memory cache and click-to-trigger
+// (no automatic lookups on popup open).
+const geocodeCache = new Map();
+
+async function reverseGeocode(lat, lon) {
+  const key = `${(+lat).toFixed(6)},${(+lon).toFixed(6)}`;
+  if (geocodeCache.has(key)) return geocodeCache.get(key);
+  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=18&addressdetails=1`;
+  const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const data = await r.json();
+  const addr = data.display_name || '(no result)';
+  geocodeCache.set(key, addr);
+  return addr;
+}
+
+function geocodeBtnHTML(lat, lon) {
+  if (!Number.isFinite(+lat) || !Number.isFinite(+lon)) return '';
+  return `<div class="geocode-row">` +
+    `<a class="geocode-btn" data-lat="${lat}" data-lon="${lon}">↺ lookup address</a>` +
+    `<div class="geocode-result"></div></div>`;
+}
+
+function wireGeocodePopup(popup) {
+  const el = popup.getElement();
+  if (!el) return;
+  const root = el.querySelector('.leaflet-popup-content');
+  if (!root) return;
+  const btn = root.querySelector('.geocode-btn');
+  if (!btn || btn.dataset.wired) return;
+  btn.dataset.wired = '1';
+  const result = root.querySelector('.geocode-result');
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (result.textContent) return;
+    const lat = parseFloat(btn.dataset.lat);
+    const lon = parseFloat(btn.dataset.lon);
+    result.textContent = 'looking up…';
+    try {
+      result.textContent = await reverseGeocode(lat, lon);
+    } catch (err) {
+      result.textContent = `error: ${err.message}`;
+      console.error('geocode failed', err);
+    }
+  });
+}
+
+// ── Chart ────────────────────────────────────────────────────────────────
+function initChart() {
+  const ctx = document.getElementById('chart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets: [{
+      label: 'Altitude',
+      data: [],
+      borderColor: '#4af',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      tension: 0,
+      fill: 'origin',
+      backgroundColor: 'rgba(68,170,255,0.08)'
+    }] },
+    options: {
+      parsing: false,
+      animation: false,
+      maintainAspectRatio: false,
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      onHover: (e, items) => {
+        if (!items || !items.length || !currentData) return;
+        const idx = items[0].index;
+        const p = currentData.track[idx];
+        if (!p) return;
+        if (!map.hasLayer(cursor)) cursor.addTo(map);
+        cursor.setLatLng([p.lat, p.lon]);
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Seconds since first fix', color: '#888', font: { size: 10 } },
+          ticks: { color: '#888', font: { family: MONO_FONT, size: 10 } },
+          grid: { color: '#222' },
+          border: { color: '#333' }
+        },
+        y: {
+          title: { display: true, text: 'Altitude (m)', color: '#888', font: { size: 10 } },
+          ticks: { color: '#888', font: { family: MONO_FONT, size: 10 } },
+          grid: { color: '#222' },
+          border: { color: '#333' }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        modeLines: { modes: [] },
+        tooltip: {
+          backgroundColor: '#111',
+          borderColor: '#333',
+          borderWidth: 1,
+          titleColor: '#ddd',
+          bodyColor: '#ddd',
+          titleFont: { family: MONO_FONT, size: 11 },
+          bodyFont: { family: MONO_FONT, size: 11 },
+          callbacks: {
+            title: items => '+' + items[0].parsed.x.toFixed(2) + 's',
+            label: item => 'alt: ' + item.parsed.y.toFixed(1) + 'm'
+          }
+        }
+      }
+    },
+    plugins: [modeLinesPlugin]
+  });
+
+  const canvas = document.getElementById('chart');
+  canvas.addEventListener('mouseleave', () => {
+    if (cursor && map.hasLayer(cursor)) map.removeLayer(cursor);
+  });
+}
+
+// ── Events panel ─────────────────────────────────────────────────────────
+function initEventsPanel() {
+  document.getElementById('event-filter').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    const items = document.querySelectorAll('#events-list .event-item');
+    items.forEach(el => {
+      const msg = (el.dataset.msg || '').toLowerCase();
+      el.classList.toggle('hide', q && !msg.includes(q));
+    });
+  });
+
+  document.getElementById('toggleEvents').addEventListener('click', () => {
+    const panel = document.getElementById('events-panel');
+    const collapsed = panel.classList.toggle('collapsed');
+    // Mirror state onto #main so the grid drops its right column.
+    document.getElementById('main').classList.toggle('no-events', collapsed);
+    document.getElementById('toggleEvents').classList.toggle('active', !collapsed);
+    // Leaflet + Chart.js both need a kick after the grid resizes.
+    requestAnimationFrame(() => {
+      if (map) map.invalidateSize();
+      if (chart) chart.resize();
+    });
+  });
+
+  document.getElementById('reloadBtn').addEventListener('click', () => {
+    const sel = document.getElementById('logSelect');
+    if (sel.value) loadLog(sel.value);
+  });
+}
+
+// ── Bootstrap & loaders ──────────────────────────────────────────────────
+async function loadLogList() {
+  showLoading(true);
+  try {
+    const r = await fetch('/api/logs');
+    if (!r.ok) {
+      const text = await r.text();
+      console.error('list failed', text);
+      alert('Failed to list logs: ' + text);
+      return;
+    }
+    const list = await r.json();
+    const sel = document.getElementById('logSelect');
+    sel.innerHTML = '';
+    if (!Array.isArray(list) || !list.length) {
+      sel.innerHTML = '<option value="">(no logs)</option>';
+      return;
+    }
+    for (const item of list) {
+      const name = typeof item === 'string' ? item : (item.name || item.filename || String(item));
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener('change', () => loadLog(sel.value));
+    sel.value = sel.options[0].value;
+    await loadLog(sel.value);
+  } catch (err) {
+    console.error('loadLogList', err);
+    alert('List error: ' + err.message);
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function loadLog(name) {
+  if (!name) return;
+  showLoading(true);
+  try {
+    const r = await fetch('/api/log/' + encodeURIComponent(name));
+    if (!r.ok) {
+      const text = await r.text();
+      console.error('load failed', text);
+      alert('Load failed: ' + text);
+      return;
+    }
+    const data = await r.json();
+    renderLog(data);
+  } catch (err) {
+    console.error('loadLog', err);
+    alert('Load error: ' + err.message);
+  } finally {
+    showLoading(false);
+  }
+}
+
+function showLoading(on) {
+  document.getElementById('loading').classList.toggle('show', !!on);
+}
+
+// ── Render pipeline ──────────────────────────────────────────────────────
+function renderLog(data) {
+  currentData = data;
+  clearLayers();
+  renderHeader(data);
+  renderTrack(data);
+  renderMarkers(data);
+  renderEvents(data);
+  renderChart(data);
+  renderStatsPill(data);
+  fitBounds(data);
+}
+
+function clearLayers() {
+  for (const layer of [trackLayer, markersLayer, eventsLayer, anomLayer, homeMarker]) {
+    if (layer && map.hasLayer(layer)) map.removeLayer(layer);
+  }
+  trackLayer = markersLayer = eventsLayer = anomLayer = homeMarker = null;
+  if (cursor && map.hasLayer(cursor)) map.removeLayer(cursor);
+}
+
+function renderHeader(data) {
+  const s = data.stats || {};
+  const parts = [
+    data.filename || '?',
+    `${s.gps_points ?? 0} pts`,
+    `${(s.duration_s ?? data.duration_s ?? 0).toFixed(1)}s`,
+    `max ${(s.max_alt ?? 0).toFixed(1)}m`,
+    `${s.events ?? 0} events`,
+    `${s.anomalies ?? 0} ⚠`
+  ];
+  document.getElementById('hdrStats').textContent = parts.join(' · ');
+  const fw = data.firmware || '';
+  const fwEl = document.getElementById('hdrFw');
+  fwEl.textContent = fw.length > 100 ? fw.slice(0, 99) + '…' : fw;
+  fwEl.title = fw;
+}
+
+function renderStatsPill(data) {
+  const s = data.stats || {};
+  const armed = s.armed ? '<span class="armed">ARMED</span>' : '<span class="ground">ground</span>';
+  const anomCls = (s.anomalies || 0) > 0 ? ' class="warn"' : '';
+  const html = [
+    escapeHtml(data.filename || '?'),
+    `${s.gps_points ?? 0} pts`,
+    `${(s.duration_s ?? data.duration_s ?? 0).toFixed(1)}s`,
+    `max ${(s.max_alt ?? 0).toFixed(1)}m`,
+    `${s.events ?? 0} events`,
+    `<span${anomCls}>${s.anomalies ?? 0} ⚠</span>`,
+    armed
+  ].join(' · ');
+  document.getElementById('stats-pill').innerHTML = html;
+}
+
+function renderTrack(data) {
+  const track = data.track || [];
+  if (!track.length) return;
+  let lo = Infinity, hi = -Infinity;
+  for (const p of track) { if (p.alt < lo) lo = p.alt; if (p.alt > hi) hi = p.alt; }
+  const max = Math.max(hi, data.stats?.max_alt ?? hi);
+  const min = lo;
+  trackLayer = L.hotline(
+    track.map(p => [p.lat, p.lon, p.alt]),
+    {
+      palette: { 0: '#e74c3c', 0.5: '#f1c40f', 1: '#2ecc71' },
+      min, max,
+      weight: 3,
+      outlineWidth: 1,
+      outlineColor: '#000'
+    }
+  ).addTo(map);
+
+  // hotline doesn't fire click on its own polyline reliably; bind to the ext layer
+  trackLayer.on('click', (e) => {
+    const idx = nearestTrackByLatLng(e.latlng);
+    highlightChartIndex(idx);
+  });
+}
+
+function renderMarkers(data) {
+  markersLayer = L.layerGroup().addTo(map);
+
+  // Home
+  if (data.home && Number.isFinite(data.home.lat) && Number.isFinite(data.home.lon)) {
+    homeMarker = L.marker([data.home.lat, data.home.lon], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div class="home-icon">🏠</div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      })
+    }).addTo(markersLayer)
+      .bindPopup(
+        `<b>Home</b><br>source: ${escapeHtml(String(data.home.source ?? '?'))}` +
+        `<br>${(+data.home.lat).toFixed(6)}, ${(+data.home.lon).toFixed(6)}` +
+        `<br>alt: ${(+data.home.alt).toFixed(2)}m` +
+        geocodeBtnHTML(data.home.lat, data.home.lon)
+      );
+  }
+
+  // Waypoints
+  for (const wp of (data.waypoints || [])) {
+    if (wp.lat === 0 && wp.lon === 0) continue; // TAKEOFF/RTL placeholders
+    const cls = 'wp' + (wp.outlier ? ' outlier' : '');
+    const inner = wp.outlier ? `<span>${wp.seq}</span>` : `${wp.seq}`;
+    const m = L.marker([wp.lat, wp.lon], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div class="${cls}">${inner}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      })
+    }).addTo(markersLayer);
+    const outlierTag = wp.outlier ? ' <b style="color:#ff8c00">OUTLIER</b>' : '';
+    m.bindPopup(
+      `WP${wp.seq} ${escapeHtml(wp.cmd_name || '')}<br>` +
+      `${(+wp.lat).toFixed(6)}, ${(+wp.lon).toFixed(6)}<br>` +
+      `alt ${(+wp.alt).toFixed(1)}m${outlierTag}` +
+      geocodeBtnHTML(wp.lat, wp.lon)
+    );
+  }
+
+  // Events: red dots at nearest track point by t
+  eventsLayer = L.layerGroup().addTo(map);
+  for (const ev of (data.events || [])) {
+    const idx = nearestTrackByT(ev.t);
+    if (idx < 0) continue;
+    const p = data.track[idx];
+    if (!p) continue;
+    const cm = L.circleMarker([p.lat, p.lon], {
+      radius: 4, color: '#ff4444', fillColor: '#ff4444',
+      fillOpacity: 0.8, weight: 1
+    }).addTo(eventsLayer);
+    cm.bindPopup(
+      `<b>${escapeHtml(ev.type || '')}</b><br>` +
+      `+${(+ev.t).toFixed(2)}s<br>` +
+      `${escapeHtml(ev.message || '')}`
+    );
+  }
+
+  // Anomalies: orange diamonds
+  anomLayer = L.layerGroup().addTo(map);
+  for (const a of (data.anomalies || [])) {
+    let lat = a.lat, lon = a.lon;
+    if (!(Number.isFinite(lat) && Number.isFinite(lon))) {
+      const idx = a.t != null ? nearestTrackByT(a.t) : -1;
+      if (idx < 0) continue;
+      const p = data.track[idx];
+      if (!p) continue;
+      lat = p.lat; lon = p.lon;
+    }
+    L.marker([lat, lon], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div class="anom"></div>',
+        iconSize: [12, 12],
+        iconAnchor: [6, 6]
+      })
+    }).addTo(anomLayer)
+      .bindPopup(
+        `<b>${escapeHtml(a.kind || '')}</b><br>${escapeHtml(a.detail || '')}` +
+        `<br>${(+lat).toFixed(6)}, ${(+lon).toFixed(6)}` +
+        geocodeBtnHTML(lat, lon)
+      );
+  }
+}
+
+function renderEvents(data) {
+  const evList = document.getElementById('events-list');
+  const anomList = document.getElementById('anom-list');
+  evList.innerHTML = '';
+  anomList.innerHTML = '';
+
+  const events = data.events || [];
+  const anoms = data.anomalies || [];
+
+  document.getElementById('evCount').textContent = events.length;
+  const anomBadge = document.getElementById('anomCount');
+  anomBadge.textContent = anoms.length;
+  anomBadge.classList.toggle('warn', anoms.length > 0);
+
+  for (const ev of events) {
+    const el = document.createElement('div');
+    el.className = 'event-item';
+    el.dataset.msg = ev.message || '';
+    let leftColor = 'transparent';
+    if (typeof ev.severity === 'number') {
+      if (ev.severity <= 3) leftColor = '#ff4444';
+      else if (ev.severity <= 5) leftColor = '#ff8c00';
+    }
+    el.style.borderLeftColor = leftColor;
+    el.innerHTML =
+      `<div><span class="ts">+${(+ev.t).toFixed(2)}s</span>` +
+      `<span class="type">${escapeHtml(ev.type || '')}</span></div>` +
+      `<div class="msg">${escapeHtml(ev.message || '')}</div>`;
+    el.addEventListener('click', () => focusEvent(ev, el));
+    evList.appendChild(el);
+  }
+
+  for (const a of anoms) {
+    const el = document.createElement('div');
+    el.className = 'anom-item';
+    const tStr = a.t != null ? `+${(+a.t).toFixed(2)}s` : '—';
+    el.innerHTML =
+      `<div><span class="ts">${tStr}</span>` +
+      `<span class="type">${escapeHtml(a.kind || '')}</span></div>` +
+      `<div class="msg">${escapeHtml(a.detail || '')}</div>`;
+    el.addEventListener('click', () => focusAnomaly(a, el));
+    anomList.appendChild(el);
+  }
+
+  // Re-apply current filter, if any
+  const q = document.getElementById('event-filter').value;
+  if (q) document.getElementById('event-filter').dispatchEvent(new Event('input'));
+}
+
+function renderChart(data) {
+  const track = data.track || [];
+  chart.data.datasets[0].data = track.map(p => ({ x: p.t, y: p.alt }));
+  chart.options.plugins.modeLines.modes = data.modes || [];
+  chart.update('none');
+}
+
+function fitBounds(data) {
+  const pts = [];
+  for (const p of (data.track || [])) pts.push([p.lat, p.lon]);
+  if (data.home && Number.isFinite(data.home.lat)) pts.push([data.home.lat, data.home.lon]);
+  for (const wp of (data.waypoints || [])) {
+    if (wp.outlier) continue;            // outliers blow out bounds
+    if (wp.lat === 0 && wp.lon === 0) continue;
+    pts.push([wp.lat, wp.lon]);
+  }
+  if (!pts.length) return;
+  // maxZoom cap keeps a stationary log (sub-meter bbox) from snapping to the
+  // tile-server ceiling, which would otherwise fire 404s on label/topo layers.
+  map.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 18 });
+}
+
+// ── Focus helpers ────────────────────────────────────────────────────────
+function focusEvent(ev, el) {
+  const idx = nearestTrackByT(ev.t);
+  if (idx >= 0 && currentData.track[idx]) {
+    const p = currentData.track[idx];
+    map.flyTo([p.lat, p.lon], Math.max(map.getZoom(), 18), { duration: 0.4 });
+    highlightChartIndex(idx);
+  }
+  flash(el);
+}
+
+function focusAnomaly(a, el) {
+  let lat = a.lat, lon = a.lon, idx = -1;
+  if (!(Number.isFinite(lat) && Number.isFinite(lon))) {
+    if (a.t != null) {
+      idx = nearestTrackByT(a.t);
+      const p = currentData.track[idx];
+      if (p) { lat = p.lat; lon = p.lon; }
+    }
+  } else if (a.t != null) {
+    idx = nearestTrackByT(a.t);
+  }
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    map.flyTo([lat, lon], Math.max(map.getZoom(), 18), { duration: 0.4 });
+  }
+  if (idx >= 0) highlightChartIndex(idx);
+  flash(el);
+}
+
+function flash(el) {
+  if (!el) return;
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 600);
+}
+
+function highlightChartIndex(i) {
+  if (!chart || i < 0) return;
+  chart.setActiveElements([{ datasetIndex: 0, index: i }]);
+  chart.tooltip.setActiveElements([{ datasetIndex: 0, index: i }], { x: 0, y: 0 });
+  chart.update('none');
+}
+
+// ── Lookups ──────────────────────────────────────────────────────────────
+// Binary search over sorted track[].t for nearest by time.
+function nearestTrackByT(t) {
+  const tr = currentData && currentData.track;
+  if (!tr || !tr.length) return -1;
+  let lo = 0, hi = tr.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (tr[mid].t < t) lo = mid + 1; else hi = mid;
+  }
+  // lo now bounds-ahead; check neighbours
+  const cand = [lo - 1, lo, lo + 1].filter(i => i >= 0 && i < tr.length);
+  let best = cand[0], bestD = Math.abs(tr[best].t - t);
+  for (const i of cand) {
+    const d = Math.abs(tr[i].t - t);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+function nearestTrackByLatLng(latlng) {
+  const tr = currentData && currentData.track;
+  if (!tr || !tr.length) return -1;
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < tr.length; i++) {
+    const dLat = tr[i].lat - latlng.lat;
+    const dLon = tr[i].lon - latlng.lng;
+    const d = dLat * dLat + dLon * dLon;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+// ── Format helpers ───────────────────────────────────────────────────────
+function formatRelTime(seconds) {
+  const sign = seconds < 0 ? '-' : '+';
+  const s = Math.abs(seconds);
+  return sign + s.toFixed(2) + 's';
+}
+
+function formatAbsTime(t, started_at) {
+  if (!started_at) return formatRelTime(t);
+  const base = Date.parse(started_at);
+  if (!Number.isFinite(base)) return formatRelTime(t);
+  return new Date(base + t * 1000).toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  initMap();
+  initChart();
+  initEventsPanel();
+  await loadLogList();
+});
+</script>
+</body>
+</html>

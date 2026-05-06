@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Parse cache — regenerated on first request from the source log's mtime
+logs/*.json
+# ...except the bundled demo cache, so the repo runs with only Flask installed
+!logs/1.BIN.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Claude Code local config
+.claude/
